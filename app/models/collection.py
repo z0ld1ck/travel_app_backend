@@ -13,7 +13,6 @@ class Collection(Base):
       name=Column(String(100),nullable=False)
       description=Column(String(255),nullable=True)
       created_at=Column(DateTime(timezone=True),server_default=func.now())
-      updated_at=Column(DateTime(timezone=True),server_default=func.now(),onupdate=func.now())
       
       user=relationship("User",back_populates="collections")
       trips= relationship("Trip",back_populates="collection",cascade="all,delete")

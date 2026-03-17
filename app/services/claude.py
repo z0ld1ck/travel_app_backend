@@ -1,19 +1,19 @@
-import json 
+import json
 import anthropic
 from app.config import settings
 
-SYSTEM_PROMPT = """You are an expert travel planner. 
-When given a destination, duration, budget and interests — 
-respond ONLY with a valid JSON object, no other text.
+SYSTEM_PROMPT = """You are an expert travel planner.
+When given a destination, duration, budget and interests —
+respond ONLY with a valid JSON object, no other text, no markdown.
 
 Use this exact schema:
 {
   "trip": {
-    "title": "string (e.g. Tokyo Adventure)",
+    "title": "string",
     "destination": "string",
     "duration_days": number,
     "total_budget": number,
-    "currency": "string (e.g. USD)",
+    "currency": "string",
     "is_multi_city": boolean,
     "cities": ["city1", "city2"] or null
   },
@@ -40,7 +40,7 @@ Use this exact schema:
       "stars": number,
       "price_per_night": number,
       "area": "string",
-      "booking_url": "https://booking.com/search?ss=CITY",
+      "booking_url": "https://www.booking.com/searchresults.html?ss=CITYNAME",
       "pros": ["string"]
     }
   ],
@@ -55,75 +55,102 @@ Use this exact schema:
 
 IMPORTANT:
 - All costs must fit within the user's total budget
-- booking_url must be a real Booking.com search URL for that city
-- For multi-city trips, include city field in itinerary and hotels
-- Respond ONLY with JSON, no markdown, no explanation"""
+- booking_url must be real Booking.com search URL for that city
+- For multi-city trips fill city field in itinerary and hotels
+- Respond ONLY with JSON, no markdown, no explanation
+- Use the same currency as specified by user"""
 
 
 class ClaudeService:
-      
-      def __init__(self):
-            self.client=anthropic.Anthropic(api_key=settings.anthropic_api_key)
-      
-      async def generate_trip_plan(self,prompt:str):
-            """
-        Генерирует план поездки через Claude.
-        Это генератор — возвращает события по одному через yield.
-        Flutter получает каждое событие сразу.
+
+    def __init__(self):
+        self.client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+
+    async def generate_trip_plan(self, prompt: str):
         """
-        
-            yield self._status_event("Анализирую направление...")
-
-            full_text=""
-
-            try:
-                  with self.client.messages.stream(
-                         model="claude-sonnet-4-20250514",
-                        max_token=4096,
-                        system=SYSTEM_PROMPT,
-                        messages=[{"role":"user","content":prompt}]
-                  ) as strem:
-                        yield self._status_event("Строю маршрут...")
-                        for text_chunk in stream.text_stream:
-                              full_text+=full_chunk
-                              yield self._chunk_event(full_text)
-                  yield self._status_event("Финализирую план...")
-
-                  trip_data=json.loads(full_text)
-                  yield self._done_event(trip_data)
-
-            except json.JSONDecodeError:
-                  yield self._error_event("Не удалось распарсить план. Попробуй снова.")
-            except Exception as e:
-                  yield self._error_event(str(e))
-
-
-      def needs_clarification(self, prompt: str) -> bool:
+        Генератор — отдаёт SSE события по одному.
+        Каждый yield немедленно уходит клиенту.
         """
-        Проверяет достаточно ли информации в запросе.
-        Если нет города или бюджета — просим уточнить.
+
+        # статус 1 — пользователь видит что происходит
+        yield self._status("Анализирую направление...")
+
+        full_text = ""
+
+        try:
+            # открываем стриминг с Claude
+            # with ... as stream — соединение открыто пока внутри блока
+            with self.client.messages.stream(
+                model="claude-sonnet-4-20250514",
+                max_tokens=4096,
+                system=SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": prompt}]
+            ) as stream:
+
+                yield self._status("Строю маршрут...")
+
+                # читаем ответ по кускам
+                for chunk in stream.text_stream:
+                    full_text += chunk
+                    yield self._chunk(chunk)
+
+            yield self._status("Финализирую план...")
+
+            # парсим финальный JSON
+            trip_data = json.loads(full_text)
+
+            # отправляем готовый план
+            yield self._done(trip_data)
+
+        except json.JSONDecodeError:
+            yield self._error("Не удалось распарсить план. Попробуй снова.")
+        except Exception as e:
+            yield self._error(str(e))
+
+    def needs_clarification(self, prompt: str) -> bool:
+        """
+        True если запрос слишком короткий или нет бюджета.
         """
         prompt_lower = prompt.lower()
-        has_budget = any(char in prompt for char in ["$", "€", "£", "₸", "₽"]) or \
-                     any(word in prompt_lower for word in ["budget", "бюджет", "денег", "сум"])
-        has_destination = len(prompt.split()) > 2
+
+        has_budget = any(
+            symbol in prompt for symbol in ["$", "€", "£", "₸", "₽"]
+        ) or any(
+            word in prompt_lower for word in ["budget", "бюджет", "денег"]
+        )
+
+        has_destination = len(prompt.split()) >= 3
 
         return not (has_budget and has_destination)
 
+    # ── SSE форматирование ──
+    # Каждое событие: "data: {json}\n\n"
+    # Два \n\n — обязательный разделитель в протоколе SSE
 
-           
-      def _status_event(self, message: str) -> str:
-        data = json.dumps({"type": "status", "message": message}, ensure_ascii=False)
+    def _status(self, message: str) -> str:
+        data = json.dumps(
+            {"type": "status", "message": message},
+            ensure_ascii=False
+        )
         return f"data: {data}\n\n"
 
-      def _chunk_event(self, text: str) -> str:
-        data = json.dumps({"type": "chunk", "text": text}, ensure_ascii=False)
+    def _chunk(self, text: str) -> str:
+        data = json.dumps(
+            {"type": "chunk", "text": text},
+            ensure_ascii=False
+        )
         return f"data: {data}\n\n"
 
-      def _done_event(self, trip_data: dict) -> str:
-        data = json.dumps({"type": "done", "plan": trip_data}, ensure_ascii=False)
+    def _done(self, plan: dict) -> str:
+        data = json.dumps(
+            {"type": "done", "plan": plan},
+            ensure_ascii=False
+        )
         return f"data: {data}\n\n"
 
-      def _error_event(self, message: str) -> str:
-        data = json.dumps({"type": "error", "message": message}, ensure_ascii=False)
+    def _error(self, message: str) -> str:
+        data = json.dumps(
+            {"type": "error", "message": message},
+            ensure_ascii=False
+        )
         return f"data: {data}\n\n"

@@ -1,0 +1,81 @@
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, delete
+from sqlalchemy.orm import selectinload
+from app.models.trip import Trip, ItineraryDay, Hotel
+import uuid
+
+
+class TripRepository:
+
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def create(self, trip_data: dict, user_id: uuid.UUID) -> Trip:
+        plan = trip_data.get("trip", {})
+
+        trip = Trip(
+            user_id=user_id,
+            title=plan.get("title", "Моя поездка"),
+            destination=plan.get("destination", ""),
+            is_multi_city=plan.get("is_multi_city", False),
+            cities=plan.get("cities"),
+            duration_days=plan.get("duration_days", 0),
+            total_budget=plan.get("total_budget", 0),
+            currency=plan.get("currency", "USD"),
+            raw_plan=trip_data
+        )
+        self.db.add(trip)
+        await self.db.flush()
+
+        for day_data in trip_data.get("itinerary", []):
+            day = ItineraryDay(
+                trip_id=trip.id,
+                day_num=day_data.get("day", 0),
+                city=day_data.get("city"),
+                title=day_data.get("title", ""),
+                activities=day_data.get("activities", [])
+            )
+            self.db.add(day)
+
+        for hotel_data in trip_data.get("hotels", []):
+            hotel = Hotel(
+                trip_id=trip.id,
+                city=hotel_data.get("city"),
+                name=hotel_data.get("name", ""),
+                stars=hotel_data.get("stars"),
+                price_per_night=hotel_data.get("price_per_night"),
+                area=hotel_data.get("area"),
+                booking_url=hotel_data.get("booking_url"),
+                pros=hotel_data.get("pros", [])
+            )
+            self.db.add(hotel)
+
+        await self.db.commit()
+
+        return await self.get_by_id(trip.id)
+
+    async def get_by_id(self, trip_id: uuid.UUID) -> Trip | None:
+        result = await self.db.execute(
+            select(Trip)
+            .options(
+                selectinload(Trip.itinerary_days),
+                selectinload(Trip.hotels)
+            )
+            .where(Trip.id == trip_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_user(self, user_id: uuid.UUID) -> list[Trip]:
+        result = await self.db.execute(
+            select(Trip)
+            .where(Trip.user_id == user_id)
+            .order_by(Trip.created_at.desc())
+        )
+        return list(result.scalars().all())
+
+    async def delete(self, trip_id: uuid.UUID) -> bool:
+        result = await self.db.execute(
+            delete(Trip).where(Trip.id == trip_id)
+        )
+        await self.db.commit()
+        return result.rowcount > 0

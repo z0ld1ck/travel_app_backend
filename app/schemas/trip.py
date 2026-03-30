@@ -75,4 +75,8 @@ class TripListItem(BaseModel):
     created_at: datetime
 
     class Config:
+<<<<<<< HEAD
         from_attributes = True
+=======
+        from_attributes = True                                                                                                                                                                                                                                                                                                                                                                                                              1111111111111111111111111111111111111111111
+>>>>>>> ca717af4207e679fe0d962d635aab739324224dc

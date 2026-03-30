@@ -11,8 +11,15 @@ class TripRepository:
         self.db = db
 
     async def create(self, trip_data: dict, user_id: uuid.UUID) -> Trip:
-        plan = trip_data.get("trip", {})
 
+        """
+        Создаём поездку из JSON который вернул Claude.
+        trip_data — это уже распарсенный dict.
+        """
+        plan = trip_data.get("trip", {})
+        budget = trip_data.get("budget_breakdown", {})
+
+        # создаём основную запись поездки
         trip = Trip(
             user_id=user_id,
             title=plan.get("title", "Моя поездка"),
@@ -22,11 +29,13 @@ class TripRepository:
             duration_days=plan.get("duration_days", 0),
             total_budget=plan.get("total_budget", 0),
             currency=plan.get("currency", "USD"),
-            raw_plan=trip_data
+
+            raw_plan=trip_data  # сохраняем весь JSON как есть
         )
         self.db.add(trip)
-        await self.db.flush()
+        await self.db.flush()  # flush даёт нам trip.id без commit
 
+        # сохраняем дни маршрута
         for day_data in trip_data.get("itinerary", []):
             day = ItineraryDay(
                 trip_id=trip.id,
@@ -54,7 +63,13 @@ class TripRepository:
 
         return await self.get_by_id(trip.id)
 
+ 
+
     async def get_by_id(self, trip_id: uuid.UUID) -> Trip | None:
+        """
+        Получаем поездку со всеми связанными данными.
+        selectinload — загружает связанные объекты одним запросом.
+        """
         result = await self.db.execute(
             select(Trip)
             .options(
@@ -66,6 +81,7 @@ class TripRepository:
         return result.scalar_one_or_none()
 
     async def get_by_user(self, user_id: uuid.UUID) -> list[Trip]:
+
         result = await self.db.execute(
             select(Trip)
             .where(Trip.user_id == user_id)
@@ -74,6 +90,7 @@ class TripRepository:
         return list(result.scalars().all())
 
     async def delete(self, trip_id: uuid.UUID) -> bool:
+
         result = await self.db.execute(
             delete(Trip).where(Trip.id == trip_id)
         )
